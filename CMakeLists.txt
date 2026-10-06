@@ -37,8 +37,13 @@ if(BROCONF_COVERAGE AND _broconf_top_level)
     message(STATUS "broconf: coverage instrumentation ON (-O0)")
 endif()
 
+# The DLL CRT (/MD, /MDd), as bro uses. broconf_api's tests link
+# bronze_runtime_shared, a DLL whose embed boundary passes C++ objects
+# (std::string, ...) both ways: with the static CRT the DLL and the test
+# executable each get their own heap, and a Debug build asserts
+# (__acrt_first_block == header) the first time one frees the other's memory.
 if(MSVC AND _broconf_top_level)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
 function(broconf_warnings target)
