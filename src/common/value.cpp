@@ -5,6 +5,8 @@
 #include <charconv>
 #include <cmath>
 #include <iomanip>
+#include <limits>
+#include <locale>
 #include <sstream>
 
 namespace broconf {
@@ -249,9 +251,19 @@ static void serialize_internal(std::ostream& os, const Value& val) {
             } else if (std::isinf(d)) {
                 os << (d < 0 ? "-inf" : "inf");
             } else {
-                std::ostringstream ss;
-                ss << std::setprecision(14) << d;
-                std::string s = ss.str();
+                // Locale-independent, and exact: 15 significant digits reads
+                // best, 17 always round-trips a double.
+                std::string s;
+                for (int precision : {15, 17}) {
+                    std::ostringstream ss;
+                    ss.imbue(std::locale::classic());
+                    ss << std::setprecision(precision) << d;
+                    s = ss.str();
+                    std::istringstream back{s};
+                    back.imbue(std::locale::classic());
+                    double r = 0.0;
+                    if ((back >> r) && r == d) break;
+                }
                 if (s.find('.') == std::string::npos && s.find('e') == std::string::npos && s.find('E') == std::string::npos) {
                     s += ".0";
                 }
@@ -454,7 +466,8 @@ private:
         if (is_float) {
             double d = 0.0;
             std::istringstream ss{std::string(num_str)};
-            ss >> d;
+            ss.imbue(std::locale::classic());
+            if (!(ss >> d)) throw TypeError("Failed to parse number: " + std::string(num_str));
             return Value(d);
         } else {
             int64_t n = 0;
@@ -618,12 +631,17 @@ Value Value::deserialize(Type expected_type, std::string_view text) {
         case Type::Int64: {
             int64_t n = 0;
             auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), n);
-            if (ec == std::errc()) return Value(n);
+            if (ec == std::errc() && ptr == text.data() + text.size()) return Value(n);
             throw TypeError("Invalid int64 string: " + std::string(text));
         }
         case Type::Double: {
+            // serialize() writes these spellings; iostreams do not read them.
+            if (text == "nan") return Value(std::numeric_limits<double>::quiet_NaN());
+            if (text == "inf") return Value(std::numeric_limits<double>::infinity());
+            if (text == "-inf") return Value(-std::numeric_limits<double>::infinity());
             double d = 0.0;
             std::istringstream ss{std::string(text)};
+            ss.imbue(std::locale::classic());
             if (ss >> d) return Value(d);
             throw TypeError("Invalid double string: " + std::string(text));
         }

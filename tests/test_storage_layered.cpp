@@ -1,6 +1,8 @@
 #include "broconf/storage.h"
 
-#include <cassert>
+#include "check.h"
+
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -32,25 +34,25 @@ void test_layered_storage() {
 
     // font-size is in user override -> 14
     auto fs = storage.get("org.bro.desktop.interface", "font-size", Type::Int64);
-    assert(fs.has_value());
-    assert(fs->get_int() == 14);
-    assert(storage.is_user_set("org.bro.desktop.interface", "font-size"));
+    REQUIRE(fs.has_value());
+    REQUIRE(fs->get_int() == 14);
+    REQUIRE(storage.is_user_set("org.bro.desktop.interface", "font-size"));
 
     // theme is only in system defaults -> DefaultTheme
     auto th = storage.get("org.bro.desktop.interface", "theme", Type::String);
-    assert(th.has_value());
-    assert(th->get_string() == "DefaultTheme");
-    assert(!storage.is_user_set("org.bro.desktop.interface", "theme"));
+    REQUIRE(th.has_value());
+    REQUIRE(th->get_string() == "DefaultTheme");
+    REQUIRE(!storage.is_user_set("org.bro.desktop.interface", "theme"));
 
     // User overrides theme
-    assert(storage.set("org.bro.desktop.interface", "theme", Value("DarkTheme")));
-    assert(storage.is_user_set("org.bro.desktop.interface", "theme"));
-    assert(storage.get("org.bro.desktop.interface", "theme", Type::String)->get_string() == "DarkTheme");
+    REQUIRE(storage.set("org.bro.desktop.interface", "theme", Value("DarkTheme")));
+    REQUIRE(storage.is_user_set("org.bro.desktop.interface", "theme"));
+    REQUIRE(storage.get("org.bro.desktop.interface", "theme", Type::String)->get_string() == "DarkTheme");
 
     // Reset theme -> should fall back to system DefaultTheme
-    assert(storage.reset("org.bro.desktop.interface", "theme"));
-    assert(!storage.is_user_set("org.bro.desktop.interface", "theme"));
-    assert(storage.get("org.bro.desktop.interface", "theme", Type::String)->get_string() == "DefaultTheme");
+    REQUIRE(storage.reset("org.bro.desktop.interface", "theme"));
+    REQUIRE(!storage.is_user_set("org.bro.desktop.interface", "theme"));
+    REQUIRE(storage.get("org.bro.desktop.interface", "theme", Type::String)->get_string() == "DefaultTheme");
 
     // External change reload
     KeyFile ext_kf;
@@ -59,16 +61,16 @@ void test_layered_storage() {
     ext_kf.save_file_atomic(user_path);
 
     auto changes = storage.reload();
-    assert(!changes.empty());
+    REQUIRE(!changes.empty());
     bool found_fs_change = false;
     for (const auto& chg : changes) {
         if (chg.section == "org.bro.desktop.interface" && chg.key == "font-size") {
             found_fs_change = true;
-            assert(chg.new_value.has_value());
-            assert(chg.new_value->get_int() == 16);
+            REQUIRE(chg.new_value.has_value());
+            REQUIRE(chg.new_value->get_int() == 16);
         }
     }
-    assert(found_fs_change);
+    REQUIRE(found_fs_change);
 
     std::filesystem::remove_all(tmp_dir);
     std::cout << "[PASS] test_layered_storage\n";
@@ -85,18 +87,21 @@ void test_concurrent_read_write() {
     std::atomic<bool> start_flag{false};
     std::atomic<bool> done_flag{false};
 
+    std::atomic<int> bad_reads{0};
+    std::atomic<int> failed_writes{0};
+
     auto reader = [&]() {
         while (!start_flag) {}
         while (!done_flag) {
             auto val = storage.get("sec", "key", Type::Int64);
-            (void)val;
+            if (val && (val->get_int() < 0 || val->get_int() > 49)) ++bad_reads;
         }
     };
 
     auto writer = [&]() {
         while (!start_flag) {}
         for (int i = 0; i < 50; ++i) {
-            storage.set("sec", "key", Value(static_cast<int64_t>(i)));
+            if (!storage.set("sec", "key", Value(static_cast<int64_t>(i)))) ++failed_writes;
             std::this_thread::yield();
         }
     };
@@ -113,6 +118,18 @@ void test_concurrent_read_write() {
         t.join();
     }
 
+    CHECK_EQ(bad_reads.load(), 0);
+    CHECK_EQ(failed_writes.load(), 0);
+
+    // Both writers end on 49, and every write went through to disk.
+    auto final_val = storage.get("sec", "key", Type::Int64);
+    REQUIRE(final_val.has_value());
+    CHECK_EQ(final_val->get_int(), static_cast<int64_t>(49));
+    LayeredStorage reread(user_path);
+    auto on_disk = reread.get("sec", "key", Type::Int64);
+    REQUIRE(on_disk.has_value());
+    CHECK_EQ(on_disk->get_int(), static_cast<int64_t>(49));
+
     std::filesystem::remove_all(tmp_dir);
     std::cout << "[PASS] test_concurrent_read_write\n";
 }
@@ -120,6 +137,5 @@ void test_concurrent_read_write() {
 int main() {
     test_layered_storage();
     test_concurrent_read_write();
-    std::cout << "All layered storage tests passed successfully.\n";
-    return 0;
+    return bstest::finish("test_storage_layered");
 }

@@ -10,6 +10,10 @@
 
 namespace broconf {
 
+// macOS: other processes' changes arrive through the settings file. The
+// directory holding it is watched with kqueue (EVFILT_VNODE: an atomic rename
+// into the directory writes it), and any change makes the Store reload and
+// diff it. notify_changed() has nothing to send: the rename is the notification.
 class MacNotifier : public INotifier {
 public:
     explicit MacNotifier(std::filesystem::path watch_file);
@@ -25,6 +29,8 @@ private:
     ExternalChangeHandler change_handler_;
     std::atomic<bool> running_{false};
     std::thread worker_thread_;
+    int dir_fd_ = -1;
+    int kq_ = -1;
 
     void run_loop();
 };

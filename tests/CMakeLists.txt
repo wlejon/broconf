@@ -1,3 +1,6 @@
+# broconf_test(<name> SOURCES ... [LIBS ...] [TIMEOUT s]): one real ctest.
+# Exit code 77 is a skip (a service genuinely absent, reason printed),
+# anything else nonzero a failure.
 function(broconf_test name)
     cmake_parse_arguments(T "" "TIMEOUT" "SOURCES;LIBS" ${ARGN})
     add_executable(${name} ${T_SOURCES})
@@ -18,6 +21,11 @@ broconf_test(test_types SOURCES test_types.cpp)
 broconf_test(test_schema SOURCES test_schema.cpp)
 broconf_test(test_keyfile SOURCES test_keyfile.cpp)
 broconf_test(test_storage_layered SOURCES test_storage_layered.cpp)
-broconf_test(test_inotify_watcher SOURCES test_inotify_watcher.cpp)
-broconf_test(test_dbus_sync SOURCES test_dbus_sync.cpp)
 broconf_test(test_store_api SOURCES test_store_api.cpp)
+# A second process writes the settings file; this one's watcher must see it.
+broconf_test(test_file_watcher SOURCES test_file_watcher.cpp)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Private dbus-daemon; a second process and gdbus emit the signal.
+    broconf_test(test_dbus_sync SOURCES test_dbus_sync.cpp)
+endif()

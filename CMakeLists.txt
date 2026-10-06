@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.24)
 
 project(broconf VERSION 0.1.0 LANGUAGES CXX)
 
+# Targets
+#   broconf::broconf   typed, schema'd, layered desktop settings store
+#
+# Sources:
+#   src/common   portable (values, schemas, keyfile, layered storage, Store)
+#   src/linux    change notification: D-Bus signal (sd-bus) + inotify
+#   src/win      change notification: directory watch
+#   src/mac      change notification: kqueue directory watch
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -13,6 +22,24 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 option(BROCONF_BUILD_TESTS "Build the broconf tests" ${_broconf_top_level})
+
+# Coverage. Scoped to a top-level build: a consumer that add_subdirectory()s
+# broconf has no business having its own build instrumented from in here.
+option(BROCONF_COVERAGE "Instrument the build for gcov coverage (GCC/Clang)" OFF)
+if(BROCONF_COVERAGE AND _broconf_top_level)
+    if(MSVC)
+        message(FATAL_ERROR "BROCONF_COVERAGE requires GCC or Clang (gcov instrumentation)")
+    endif()
+    # Atomic counters: the notifier runs its own thread, and racing plain
+    # counters leave negative branch counts gcov cannot read.
+    add_compile_options(--coverage -fprofile-update=atomic -O0 -g)
+    add_link_options(--coverage)
+    message(STATUS "broconf: coverage instrumentation ON (-O0)")
+endif()
+
+if(MSVC AND _broconf_top_level)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 function(broconf_warnings target)
     if(MSVC)
@@ -31,9 +58,7 @@ if(WIN32)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig REQUIRED)
     find_package(Threads REQUIRED)
-
     pkg_check_modules(BROCONF_SYSTEMD REQUIRED IMPORTED_TARGET libsystemd>=246)
-
     file(GLOB _linux_sources CONFIGURE_DEPENDS src/linux/*.cpp)
     list(APPEND BROCONF_SOURCES ${_linux_sources})
 elseif(APPLE)
@@ -59,7 +84,6 @@ broconf_warnings(broconf)
 if(WIN32)
     target_compile_definitions(broconf PRIVATE
         NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE _WIN32_WINNT=0x0A00)
-    target_link_libraries(broconf PRIVATE advapi32)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(broconf
         PUBLIC
@@ -67,9 +91,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         PRIVATE
             PkgConfig::BROCONF_SYSTEMD)
 elseif(APPLE)
-    target_link_libraries(broconf
-        PUBLIC
-            Threads::Threads)
+    target_link_libraries(broconf PUBLIC Threads::Threads)
 endif()
 
 if(BROCONF_BUILD_TESTS)

@@ -10,6 +10,11 @@
 
 namespace broconf {
 
+// Windows: other processes' changes arrive through the settings file. The
+// directory holding it is watched (FindFirstChangeNotificationW: file names
+// and last-write times), and any change makes the Store reload and diff it.
+// There is no broadcast channel, so notify_changed() has nothing to send: the
+// atomic rename of the file is the notification.
 class WinNotifier : public INotifier {
 public:
     explicit WinNotifier(std::filesystem::path watch_file);
@@ -25,6 +30,8 @@ private:
     ExternalChangeHandler change_handler_;
     std::atomic<bool> running_{false};
     std::thread worker_thread_;
+    void* change_handle_ = nullptr;  // HANDLE from FindFirstChangeNotificationW
+    void* stop_event_ = nullptr;     // HANDLE, manual-reset event
 
     void run_loop();
 };

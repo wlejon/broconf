@@ -1,6 +1,6 @@
 #include "broconf/store.h"
 
-#include <cassert>
+#include "check.h"
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -35,14 +35,14 @@ void test_store_comprehensive() {
     store->register_schema(iface);
 
     // 2. Test schema defaults
-    assert(store->has("org.bro.desktop.interface", "dark-mode"));
-    assert(store->is_default("org.bro.desktop.interface", "dark-mode"));
-    assert(store->get_as<bool>("org.bro.desktop.interface", "dark-mode") == false);
-    assert(store->get_as<int64_t>("org.bro.desktop.interface", "font-size") == 11);
-    assert(store->get_as<double>("org.bro.desktop.interface", "ui-scale") == 1.0);
-    assert(store->get_as<std::string>("org.bro.desktop.interface", "theme") == "BroLight");
-    assert(store->get_as<Color>("org.bro.desktop.interface", "accent-color") == Color(53, 132, 228));
-    assert(store->get_as<Rect>("org.bro.desktop.interface", "window-geometry") == Rect(0, 0, 1024, 768));
+    REQUIRE(store->has("org.bro.desktop.interface", "dark-mode"));
+    REQUIRE(store->is_default("org.bro.desktop.interface", "dark-mode"));
+    REQUIRE(store->get_as<bool>("org.bro.desktop.interface", "dark-mode") == false);
+    REQUIRE(store->get_as<int64_t>("org.bro.desktop.interface", "font-size") == 11);
+    REQUIRE(store->get_as<double>("org.bro.desktop.interface", "ui-scale") == 1.0);
+    REQUIRE(store->get_as<std::string>("org.bro.desktop.interface", "theme") == "BroLight");
+    REQUIRE(store->get_as<Color>("org.bro.desktop.interface", "accent-color") == Color(53, 132, 228));
+    REQUIRE(store->get_as<Rect>("org.bro.desktop.interface", "window-geometry") == Rect(0, 0, 1024, 768));
 
     // 3. Local watch notifications
     bool notified_theme = false;
@@ -54,11 +54,11 @@ void test_store_comprehensive() {
                  });
 
     // 4. Set valid values
-    assert(store->set("org.bro.desktop.interface", "theme", Value("BroDark")));
-    assert(!store->is_default("org.bro.desktop.interface", "theme"));
-    assert(store->get_as<std::string>("org.bro.desktop.interface", "theme") == "BroDark");
-    assert(notified_theme);
-    assert(new_theme_val == "BroDark");
+    REQUIRE(store->set("org.bro.desktop.interface", "theme", Value("BroDark")));
+    REQUIRE(!store->is_default("org.bro.desktop.interface", "theme"));
+    REQUIRE(store->get_as<std::string>("org.bro.desktop.interface", "theme") == "BroDark");
+    REQUIRE(notified_theme);
+    REQUIRE(new_theme_val == "BroDark");
 
     // 5. Validation failures
     bool threw = false;
@@ -68,7 +68,7 @@ void test_store_comprehensive() {
     } catch (const ValidationError&) {
         threw = true;
     }
-    assert(threw);
+    REQUIRE(threw);
 
     threw = false;
     try {
@@ -77,28 +77,28 @@ void test_store_comprehensive() {
     } catch (const ValidationError&) {
         threw = true;
     }
-    assert(threw);
+    REQUIRE(threw);
 
     // 6. Reset value
     notified_theme = false;
-    assert(store->reset("org.bro.desktop.interface", "theme"));
-    assert(store->is_default("org.bro.desktop.interface", "theme"));
-    assert(store->get_as<std::string>("org.bro.desktop.interface", "theme") == "BroLight");
-    assert(notified_theme);
-    assert(new_theme_val == "BroLight");
+    REQUIRE(store->reset("org.bro.desktop.interface", "theme"));
+    REQUIRE(store->is_default("org.bro.desktop.interface", "theme"));
+    REQUIRE(store->get_as<std::string>("org.bro.desktop.interface", "theme") == "BroLight");
+    REQUIRE(notified_theme);
+    REQUIRE(new_theme_val == "BroLight");
 
     // 7. Unwatch
-    assert(store->unwatch(token));
+    REQUIRE(store->unwatch(token));
     notified_theme = false;
     store->set("org.bro.desktop.interface", "theme", Value("BroSolarized"));
-    assert(!notified_theme); // Was unwatched
+    REQUIRE(!notified_theme); // Was unwatched
 
     // 8. Persistence check: Re-instantiate Store pointing to same file
     {
         auto store2 = Store::create(opts);
         store2->register_schema(iface);
-        assert(store2->get_as<std::string>("org.bro.desktop.interface", "theme") == "BroSolarized");
-        assert(!store2->is_default("org.bro.desktop.interface", "theme"));
+        REQUIRE(store2->get_as<std::string>("org.bro.desktop.interface", "theme") == "BroSolarized");
+        REQUIRE(!store2->is_default("org.bro.desktop.interface", "theme"));
     }
 
     std::filesystem::remove_all(tmp_dir);
@@ -107,6 +107,5 @@ void test_store_comprehensive() {
 
 int main() {
     test_store_comprehensive();
-    std::cout << "All store API tests passed successfully.\n";
-    return 0;
+    return bstest::finish("test_store_api");
 }

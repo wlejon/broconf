@@ -7,6 +7,7 @@
 #include <fstream>
 #include <random>
 #include <sstream>
+#include <thread>
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
@@ -83,8 +84,11 @@ std::string KeyFile::save_string() const {
 }
 
 bool KeyFile::load_file(const std::filesystem::path& path) {
+    // A file that is gone (deleted, or never written) holds no keys: a reload
+    // after another process removed it must not keep serving the old ones.
     std::error_code ec;
     if (!std::filesystem::exists(path, ec) || !std::filesystem::is_regular_file(path, ec)) {
+        sections_.clear();
         return false;
     }
 
@@ -108,7 +112,7 @@ bool KeyFile::save_file_atomic(const std::filesystem::path& path) const {
         }
     }
 
-    static std::mt19937_64 rng{static_cast<uint64_t>(
+    thread_local std::mt19937_64 rng{static_cast<uint64_t>(
         std::chrono::steady_clock::now().time_since_epoch().count())};
     uint64_t rand_id = rng();
 
@@ -117,7 +121,11 @@ bool KeyFile::save_file_atomic(const std::filesystem::path& path) const {
 
     std::string text = save_string();
 
-    FILE* f = std::fopen(tmp_path.string().c_str(), "wb");
+#if defined(_WIN32)
+    FILE* f = _wfopen(tmp_path.c_str(), L"wb");
+#else
+    FILE* f = std::fopen(tmp_path.c_str(), "wb");
+#endif
     if (!f) {
         return false;
     }
@@ -139,8 +147,18 @@ bool KeyFile::save_file_atomic(const std::filesystem::path& path) const {
     std::fclose(f);
 
     std::filesystem::rename(tmp_path, path, ec);
+#if defined(_WIN32)
+    // Replacing a file fails while another process (a watcher reloading it)
+    // has it open without delete sharing; that window is short, so retry.
+    for (int attempt = 0; ec && attempt < 100; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        ec.clear();
+        std::filesystem::rename(tmp_path, path, ec);
+    }
+#endif
     if (ec) {
-        std::filesystem::remove(tmp_path, ec);
+        std::error_code ignored;
+        std::filesystem::remove(tmp_path, ignored);
         return false;
     }
 
