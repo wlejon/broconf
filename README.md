@@ -6,7 +6,16 @@ Desktop settings for a desktop environment built on the
 [bro](https://github.com/wlejon/bro) runtime: a typed, schema'd, layered
 store whose changes reach every process that has it open, in the spirit of
 GSettings/dconf or KConfig. A standalone C++20 library: no dependency on bro
-or bronze, no JS binding, its own CMake and ctest.
+or bronze, no JS binding in the core library, its own CMake and ctest.
+
+## Where it sits
+
+Part of the **[bro](https://github.com/wlejon/bro)** desktop ecosystem (see the
+[ecosystem architecture](https://github.com/wlejon/bro/blob/main/docs/ecosystem.md)).
+Within the desktop stack, `broconf` provides the unified configuration store:
+coordinating settings (accent colours, font sizes, interface themes, shell
+layouts, key bindings) across applications, shell components, and background
+daemons with cross-process synchronization.
 
 ## Model
 
@@ -25,6 +34,8 @@ watchers of each key that actually changed, with its new effective value (the
 schema default again after a reset).
 
 ```cpp
+#include <broconf/broconf.h>
+
 auto store = broconf::Store::create();            // the default paths below
 auto iface = std::make_shared<broconf::Schema>("org.bro.desktop.interface");
 iface->add_color("accent-color", broconf::Color(53, 132, 228))
@@ -42,17 +53,15 @@ store->set("org.bro.desktop.interface", "accent-color", broconf::Value::make_col
 store->reset("org.bro.desktop.interface", "accent-color");   // back to the default
 ```
 
-```
-include/broconf/
-  types.h     Type, Color, Rect, EnumValue; ConfError, TypeError, ValidationError
-  value.h     Value (bool, int64, double, string, string list, enum, color, rect,
-              dictionary) and Dictionary; serialize / deserialize / parse_inferred
-  schema.h    KeySchema, Schema (builder), SchemaRegistry
-  storage.h   KeyFile (INI parser/writer, atomic save), LayeredStorage (user over system)
-  watcher.h   WatcherRegistry, INotifier (the cross-process channel)
-  store.h     Store, StoreOptions
-  broconf.h   umbrella header
-```
+| Header | Contents |
+| :--- | :--- |
+| `types.h` | `Type`, `Color`, `Rect`, `EnumValue`; `ConfError`, `TypeError`, `ValidationError` |
+| `value.h` | `Value` (bool, int64, double, string, string list, enum, color, rect, dictionary) and `Dictionary`; codecs |
+| `schema.h` | `KeySchema`, `Schema` (builder), `SchemaRegistry` |
+| `storage.h` | `KeyFile` (INI parser/writer, atomic save), `LayeredStorage` (user over system) |
+| `watcher.h` | `WatcherRegistry`, `INotifier` (cross-process notification channels) |
+| `store.h` | `Store`, `StoreOptions` |
+| `broconf.h` | Master umbrella header |
 
 Watcher callbacks for other processes' changes run on the notifier's thread;
 callbacks for the store's own writes run on the writing thread.
@@ -61,46 +70,112 @@ callbacks for the store's own writes run on the writing thread.
 
 | | Linux | Windows | macOS |
 |---|---|---|---|
-| User file | `$XDG_CONFIG_HOME/bro/settings.ini` (`~/.config/bro/...`) | `%APPDATA%\bro\settings.ini` | `~/Library/Preferences/bro/settings.ini` |
-| System files | each `$XDG_CONFIG_DIRS/bro/settings.ini` (else `/etc/xdg/bro/...`), then `/usr/share/bro/settings.ini` | `%PROGRAMDATA%\bro\settings.ini` | `/Library/Preferences/bro/settings.ini` |
-| Other processes' changes | `org.bro.Config.Changed(s path, s key)` on the session bus (sd-bus), and inotify on the user file's directory | directory watch (`FindFirstChangeNotificationW`) | kqueue `EVFILT_VNODE` on the directory |
+| **User file** | `$XDG_CONFIG_HOME/bro/settings.ini` (`~/.config/bro/...`) | `%APPDATA%\bro\settings.ini` | `~/Library/Preferences/bro/settings.ini` |
+| **System files** | Each `$XDG_CONFIG_DIRS/bro/settings.ini` (fallback `/etc/xdg/bro/...`), then `/usr/share/bro/settings.ini` | `%PROGRAMDATA%\bro\settings.ini` | `/Library/Preferences/bro/settings.ini` |
+| **Other processes' changes** | `org.bro.Config.Changed(s path, s key)` on session bus (sd-bus), plus inotify on user file directory | Directory watch (`FindFirstChangeNotificationW`) | kqueue `EVFILT_VNODE` on directory |
 
-The file watch alone is enough for processes that share the user file; the
-D-Bus signal (Linux) also tells processes that keep their settings elsewhere
+The file watch alone is sufficient for processes sharing the user file; the
+D-Bus signal (Linux) also informs processes that keep their settings elsewhere
 which key changed. A missing session bus disables the signal and leaves the
-file watch. Every path can be overridden in `StoreOptions`, and either channel
-turned off (`enable_dbus`, `enable_file_watcher`).
+file watch operational. Every path can be overridden in `StoreOptions`, and either
+notification channel can be disabled (`enable_dbus`, `enable_file_watcher`).
 
 ## Building
 
+### Prerequisites
+
+- **CMake 3.24+** and a **C++20** compiler (MSVC 2022+, GCC 12+, Clang 15+, Apple Clang).
+- **Linux**: `libsystemd` (sd-bus >= 246) with pkg-config (`libsystemd-dev` on Debian/Ubuntu, `systemd-libs` on Arch).
+  The Linux D-Bus test also uses `dbus-daemon` and `gdbus` when present.
+- **Windows / macOS**: No external libraries required.
+
+### Standalone build
+
 ```bash
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Release        # Windows: cmake -B build
+# Linux / macOS
+cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release
+ctest --test-dir build-release --output-on-failure
+
+# Windows (MSVC)
+cmake -B build
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-Requirements: CMake 3.24+, a C++20 compiler (MSVC 2022, GCC 12+, Clang 15+,
-Apple Clang), and on Linux `libsystemd` (sd-bus, >= 246) with pkg-config.
-The Linux D-Bus test also uses `dbus-daemon` and `gdbus` when present. There
-are no sibling repos to fetch.
+CMake options:
+- `BROCONF_BUILD_TESTS`: Build tests (default `ON` when top-level, `OFF` when included via `add_subdirectory`).
+- `BROCONF_COVERAGE`: Instrument the build for gcov coverage (GCC/Clang).
+- `BROCONF_ENABLE_API`: Build the standalone Bronze JavaScript API (default `ON`; searches `../bronze` or `-DBRONZE_DIR=<path>`).
 
-Add it to another CMake project with `add_subdirectory(broconf)` and link
-`broconf::broconf`.
+### Consuming broconf
+
+Downstream projects consume the `broconf::broconf` CMake target. Following the
+ecosystem dependency convention, consumers resolve `broconf` either as a sibling
+checkout or as a vendored submodule:
+
+#### Sibling layout
+
+When `broconf` is checked out beside your project at `../broconf`:
+
+```cmake
+if(NOT TARGET broconf::broconf)
+    if(DEFINED BROCONF_DIR AND EXISTS "${BROCONF_DIR}/CMakeLists.txt")
+        # Explicit override supplied via -DBROCONF_DIR=<path>
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../broconf/CMakeLists.txt")
+        set(BROCONF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../broconf" CACHE PATH "broconf source tree")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/../broconf/CMakeLists.txt")
+        set(BROCONF_DIR "${CMAKE_SOURCE_DIR}/../broconf" CACHE PATH "broconf source tree")
+    endif()
+
+    if(NOT BROCONF_DIR OR NOT EXISTS "${BROCONF_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "broconf not found beside this repository or at BROCONF_DIR")
+    endif()
+
+    add_subdirectory("${BROCONF_DIR}" "${CMAKE_BINARY_DIR}/broconf-build" EXCLUDE_FROM_ALL)
+endif()
+```
+
+#### Submodule layout
+
+When `broconf` is vendored as a git submodule under `third_party/broconf`:
+
+```cmake
+if(NOT TARGET broconf::broconf)
+    add_subdirectory(third_party/broconf EXCLUDE_FROM_ALL)
+endif()
+```
+
+#### Linking
+
+```cmake
+target_link_libraries(your_target PRIVATE broconf::broconf)
+```
 
 ## Tests
 
-Real ctests: no `assert()`, failures count in every configuration, exit 77 is
-a skip with the reason printed. Everything runs in a temporary directory and
-leaves nothing behind.
+Test assertions use `tests/check.h` (active in every configuration, no `assert()`).
+A test that cannot run in the current environment exits code 77 with the reason
+printed, and ctest reports it as skipped. Everything runs in isolated temporary
+directories and leaves nothing behind.
 
-| Test | What it checks against |
-|---|---|
-| test_types, test_schema | value codecs (exact double round trip, escapes, nan/inf), schema validation |
-| test_keyfile | the INI format and atomic saves, read back from disk |
-| test_storage_layered | user-over-system layering, reset, external rewrites seen by reload, concurrent readers and writers |
-| test_store_api | the Store end to end, persistence across instances |
-| test_file_watcher | a second process (the test binary run again) sets and resets a key in the shared file; the watcher must report both (inotify / directory watch / kqueue) |
-| test_dbus_sync (Linux) | on a private `dbus-daemon`: a second process's write, a `gdbus emit` from an independent client, and no echo of the store's own signal |
+| Test | Platform | Target / Environment | Oracle |
+|---|---|---|---|
+| `test_types`, `test_schema` | everywhere | in-process | Value codecs (exact double round trip, escapes, nan/inf), schema validation |
+| `test_keyfile` | everywhere | temporary directory | INI parser/writer and atomic saves (temp file, flush, rename), read back from disk |
+| `test_storage_layered` | everywhere | temporary directory | User-over-system layering, reset, external rewrites seen by reload, concurrent readers and writers |
+| `test_store_api` | everywhere | temporary directory | End-to-end Store API, persistence across instances |
+| `test_file_watcher` | everywhere | second helper process | A second process (the test binary re-executed) sets and resets a key in the shared file; watcher reports both (inotify / directory watch / kqueue) |
+| `test_dbus_sync` | Linux | private `dbus-daemon` + `gdbus` | A second process's write, a `gdbus emit` from an independent client, and verification that the store's own signal is not echoed |
+| `broconf_test_api` | Linux / Windows (when API enabled) | Bronze runtime | Bronze JavaScript bindings (`broconf_api`) and garbage collection stress testing |
+
+### Test fixtures & CI skipping
+
+- **File watcher tests**: Tests run an external process helper to modify the INI file
+  and verify asynchronous notification delivery across process boundaries.
+- **Private D-Bus daemon**: `test_dbus_sync` starts an isolated `dbus-daemon` session
+  instance so that no test signals or names touch the user's desktop session bus.
+  If `dbus-daemon` or `gdbus` is missing, the test exits 77 (skipped).
 
 ## License
 
