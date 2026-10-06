@@ -20,8 +20,8 @@ concurrency:
 #
 # Three analyses, because each change notifier compiles only on its own OS:
 # Linux (sd-bus + inotify), Windows (directory watch) and macOS (kqueue), each
-# with the portable core. broconf has no vendored or sibling code, so the
-# whole build is traced.
+# with the portable core. broconf has no vendored code; the only sibling code is
+# bronze/brass for broconf_api, pre-built ahead of the trace.
 jobs:
   analyze:
     name: Analyze C++ (${{ matrix.os }})
@@ -37,6 +37,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: broconf
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install packages (Linux)
         if: runner.os == 'Linux'
@@ -48,23 +52,31 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ninja
 
+      - name: Configure
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -S broconf -B build -DBROCONF_BUILD_TESTS=OFF
+          else
+            cmake -S broconf -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBROCONF_BUILD_TESTS=OFF
+          fi
+
+      # bronze (and brass through it), for broconf_api, is analysed by its own
+      # workflows. Anything built before `init` is never extracted, so building
+      # it here keeps it out of this database.
+      - name: Pre-build bronze (outside the traced build)
+        run: cmake --build build --config Debug --parallel 4 --target bronze_runtime_shared
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: c-cpp
           build-mode: manual
+          source-root: broconf
           queries: security-extended
 
       - name: Build (traced)
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake -B build -DBROCONF_BUILD_TESTS=OFF
-            cmake --build build --config Debug --parallel 4
-          else
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBROCONF_BUILD_TESTS=OFF
-            cmake --build build --parallel 4
-          fi
+        run: cmake --build build --config Debug --parallel 4
 
       - name: Analyze
         uses: github/codeql-action/analyze@v4

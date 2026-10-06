@@ -99,7 +99,10 @@ if(BROCONF_BUILD_TESTS)
 endif()
 
 # --- Standalone Bronze JavaScript API ---
-option(BROCONF_ENABLE_API "Build Bronze JavaScript API" ON)
+# On by default only when broconf is the top-level project. A library that
+# consumes broconf then never needs bronze for it; bro forces
+# BROCONF_ENABLE_API ON itself when it wants the binding.
+option(BROCONF_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_LEVEL})
 if(BROCONF_ENABLE_API)
     if(NOT TARGET bronze_runtime_shared)
         set(BRONZE_BUILD_SHARED_RUNTIME ON CACHE BOOL "" FORCE)
