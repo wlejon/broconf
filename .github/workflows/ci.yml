@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# broconf has no siblings: every job builds this repo alone.
+#
+# Every test runs everywhere it can: the store, codecs and layering are
+# portable, test_file_watcher has a second process write the shared settings
+# file on each OS (inotify / directory watch / kqueue), and on Linux
+# test_dbus_sync starts its own private dbus-daemon and uses gdbus as an
+# independent emitter. Every Test step ends with the "did not run" list and
+# each skipped test's own reason (.github/ci/ctest.sh): that is what a job
+# really covered.
+env:
+  LINUX_PACKAGES: >-
+    ninja-build pkg-config libsystemd-dev dbus-daemon libglib2.0-bin
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc,          os: ubuntu-24.04, cc: gcc,   cxx: g++,     config: Release }
+          - { name: linux-clang,        os: ubuntu-24.04, cc: clang, cxx: clang++, config: Release }
+          - { name: windows-msvc,       os: windows-2022,                          config: Release }
+          # Debug CRT: iterator debugging and the library's own assert()s.
+          - { name: windows-msvc-debug, os: windows-2022,                          config: Debug }
+          - { name: macos-arm64,        os: macos-15,                              config: Release }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $LINUX_PACKAGES
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -B build
+          else
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+          fi
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel 4
+
+      - name: Test
+        shell: bash
+        run: .github/ci/ctest.sh --test-dir build -C ${{ matrix.config }}
+
+  # ── Coverage ──────────────────────────────────────────────────────────────
+  #
+  # Linux: the portable core plus the D-Bus + inotify notifier. Debug (-O0),
+  # so this is also the Linux job where assert()s are live. The Windows and
+  # macOS notifiers are exercised by the test matrix, not measured.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: broconf
+
+      - name: Install packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcovr $LINUX_PACKAGES
+
+      - name: Configure (instrumented)
+        run: |
+          cmake -S broconf -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBROCONF_COVERAGE=ON
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Test
+        run: broconf/.github/ci/ctest.sh --test-dir build
+
+      # pipefail: piping gcovr into tee otherwise hands the step tee's exit
+      # status, so a gcovr crash produces no report and the job still goes green.
+      - name: Report
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p coverage-html
+          gcovr --root . \
+            --filter 'broconf/src/' --filter 'broconf/include/broconf/' \
+            --exclude-unreachable-branches \
+            --print-summary \
+            --html-details coverage-html/index.html \
+            | tee coverage-summary.txt
+          test -s coverage-html/index.html
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo '## Coverage — `src/` + `include/broconf/`'
+            echo
+            echo 'Linux (portable core, D-Bus + inotify notifier); the Windows and macOS notifiers are exercised by the test matrix, not measured.'
+            echo
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: coverage-html/
+          retention-days: 14

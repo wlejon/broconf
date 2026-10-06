@@ -1,131 +1,107 @@
 # broconf
 
-Standalone C++20 desktop configuration and settings library.
+[![CI](https://github.com/wlejon/broconf/actions/workflows/ci.yml/badge.svg)](https://github.com/wlejon/broconf/actions/workflows/ci.yml)
 
-`broconf` provides desktop-wide settings: a typed, schema'd store that notifies across processes (similar to GSettings/dconf or KConfig), feeding desktop environments, shells, and portal settings (`org.freedesktop.portal.Settings`).
+Desktop settings for a desktop environment built on the
+[bro](https://github.com/wlejon/bro) runtime: a typed, schema'd, layered
+store whose changes reach every process that has it open, in the spirit of
+GSettings/dconf or KConfig. A standalone C++20 library: no dependency on bro
+or bronze, no JS binding, its own CMake and ctest.
 
-## Overview & Architecture
+## Model
 
-- **Typed & Schema-Driven**: First-class support for `bool`, `int64_t`, `double`, `std::string`, `std::vector<std::string>`, `enum`, `color` (RGBA), `rect` (x, y, width, height), and `dictionary` (structured key-value mapping).
-- **Validation Rules**: Min/max range enforcement for numeric types, allowed values for enums, and custom predicate validators.
-- **Layered Overrides**:
-  1. In-memory user modifications
-  2. User persistent configuration (`~/.config/bro/settings.ini` or `$XDG_CONFIG_HOME`)
-  3. System defaults (`/etc/xdg/bro/settings.ini` or `$XDG_CONFIG_DIRS`, `/usr/share/bro/settings.ini`)
-  4. Schema defaults
-- **Atomic Persistent Storage**: Hierarchical INI/keyfile storage with atomic replacement via temporary files + `fsync` + atomic `rename`.
-- **Cross-Process Synchronization**:
-  - **Linux**: High-speed D-Bus change notification signals (`org.bro.Config.Changed(path, key)`) over the user session bus via `sd-bus` (`libsystemd`), with automatic inotify directory monitoring fallback.
-  - **Windows**: Directory change notifications via `FindFirstChangeNotificationW`.
-  - **macOS**: Directory monitoring via `kqueue` VNODE notifications.
-- **Reactive Watchers**: Thread-safe change listeners (`watch(path, callback)`, `watch(path, key, callback)`).
-- **Strict House Rules**: All source files strictly under 1,000 LOC, modern C++20, RAII wrappers, zero mock objects.
+A `Store` reads a key by looking, in order, at the user's settings file, the
+system settings files, and the key's schema default. Writes go to the user
+file only, replacing it atomically (temporary file, flush, rename), so a
+reader in another process sees the old file or the new one, never half of
+one. Schemas declare each key's type, default and constraints (numeric
+range, enum values, a custom predicate); a write that breaks one throws
+`ValidationError` and changes nothing.
 
-## Directory Structure
-
-```
-broconf/
-├── CMakeLists.txt
-├── README.md
-├── include/
-│   └── broconf/
-│       ├── broconf.h       # Umbrella header & version definitions
-│       ├── types.h         # Type enum, Color, Rect, EnumValue, error hierarchy
-│       ├── value.h         # Value variant and Dictionary class
-│       ├── schema.h        # KeySchema, Schema builder, SchemaRegistry
-│       ├── storage.h       # KeyFile parser/serializer & LayeredStorage
-│       ├── watcher.h       # WatcherRegistry & INotifier interface
-│       └── store.h         # Store facade & StoreOptions
-├── src/
-│   ├── common/
-│   │   ├── keyfile.cpp     # INI/keyfile parser and atomic file saver
-│   │   ├── schema.cpp      # Validation rules and SchemaRegistry
-│   │   ├── storage.cpp     # Layered storage fallback & reload diffs
-│   │   ├── store.cpp       # Main Store orchestration & default paths
-│   │   ├── types.cpp       # Color and Rect string parsers & formatters
-│   │   ├── value.cpp       # Value variant, Dictionary, and JSON/INI codecs
-│   │   └── watcher.cpp     # Thread-safe in-process watcher registry
-│   ├── linux/
-│   │   ├── linux_notifier.h
-│   │   └── linux_notifier.cpp  # D-Bus (sd-bus) signals + inotify worker thread
-│   ├── win/
-│   │   ├── win_notifier.h
-│   │   └── win_notifier.cpp    # Windows directory monitoring bridge
-│   └── mac/
-│       ├── mac_notifier.h
-│       └── mac_notifier.cpp    # macOS kqueue directory monitoring bridge
-└── tests/
-    ├── CMakeLists.txt
-    ├── test_types.cpp          # 9 typed values, parsers, serializers
-    ├── test_schema.cpp         # Schema builder, validation rules, registry
-    ├── test_keyfile.cpp        # INI parser, serializer, atomic persistence
-    ├── test_storage_layered.cpp# Real disk layering, fallback, concurrent RW
-    ├── test_inotify_watcher.cpp# Real inotify file monitoring with atomic rename
-    ├── test_dbus_sync.cpp      # Real cross-process D-Bus signals over session bus
-    └── test_store_api.cpp      # End-to-end Store API tests
-```
-
-## Backend Implementation Matrix
-
-| Feature | Linux | Windows | macOS |
-|---|---|---|---|
-| **Storage Engine** | Hierarchical keyfile (`settings.ini`) | Hierarchical keyfile (`settings.ini`) | Hierarchical keyfile (`settings.ini`) |
-| **Atomic Writes** | `.tmp` file + `fsync` + `rename` | `.tmp` file + `MoveFileExW` / `rename` | `.tmp` file + `fsync` + `rename` |
-| **User Path** | `$XDG_CONFIG_HOME/bro/settings.ini` | `%APPDATA%\bro\settings.ini` | `~/Library/Preferences/bro/settings.ini` |
-| **System Paths** | `$XDG_CONFIG_DIRS`, `/usr/share/bro/` | `%PROGRAMDATA%\bro\settings.ini` | `/Library/Preferences/bro/settings.ini` |
-| **IPC Notifications** | D-Bus signal (`org.bro.Config.Changed`) | Platform bridge notifier | Platform bridge notifier |
-| **File Monitoring** | Linux inotify (`IN_MOVED_TO`, `IN_CLOSE_WRITE`) | `FindFirstChangeNotificationW` | BSD `kqueue` (`EVFILT_VNODE`) |
-
-## Quick Start Example
+Watchers fire for changes made through the store itself and for changes made
+by other processes. Those arrive as a changed file (and on Linux also as a
+D-Bus signal); the store reloads, diffs the effective values, and calls the
+watchers of each key that actually changed, with its new effective value (the
+schema default again after a reset).
 
 ```cpp
-#include <broconf/broconf.h>
-#include <iostream>
+auto store = broconf::Store::create();            // the default paths below
+auto iface = std::make_shared<broconf::Schema>("org.bro.desktop.interface");
+iface->add_color("accent-color", broconf::Color(53, 132, 228))
+     .add_int("font-size", 11, 8, 36)
+     .add_enum("clock-format", "24h", {"12h", "24h"});
+store->register_schema(iface);
 
-using namespace broconf;
+store->watch("org.bro.desktop.interface", "accent-color",
+             [](const std::string&, const std::string&, const broconf::Value& v) {
+                 apply_accent(v.get_color());   // runs on the notifier thread for others' changes
+             });
 
-int main() {
-    // 1. Initialize store
-    auto store = Store::default_store();
-
-    // 2. Define schema
-    auto iface = std::make_shared<Schema>("org.bro.desktop.interface");
-    iface->add_color("accent-color", Color(53, 132, 228))
-         .add_int("font-size", 11, 8, 36)
-         .add_bool("dark-mode", false)
-         .add_enum("clock-format", "24h", {"12h", "24h"});
-    store->register_schema(iface);
-
-    // 3. Watch for changes
-    store->watch("org.bro.desktop.interface", "accent-color",
-                 [](const std::string& path, const std::string& key, const Value& val) {
-                     std::cout << "Accent color changed to: "
-                               << val.get_color().to_hex_string() << "\n";
-                 });
-
-    // 4. Read settings (falls back to schema default if not set)
-    Color accent = store->get_as<Color>("org.bro.desktop.interface", "accent-color");
-    std::cout << "Current accent: " << accent.to_hex_string() << "\n";
-
-    // 5. Update settings (persists atomically and notifies across processes)
-    store->set("org.bro.desktop.interface", "accent-color", Value(Color(255, 64, 128)));
-
-    // 6. Reset setting to system/schema default
-    store->reset("org.bro.desktop.interface", "accent-color");
-
-    return 0;
-}
+auto size = store->get_as<int64_t>("org.bro.desktop.interface", "font-size");
+store->set("org.bro.desktop.interface", "accent-color", broconf::Value::make_color(255, 64, 128));
+store->reset("org.bro.desktop.interface", "accent-color");   // back to the default
 ```
 
-## Building & Testing
+```
+include/broconf/
+  types.h     Type, Color, Rect, EnumValue; ConfError, TypeError, ValidationError
+  value.h     Value (bool, int64, double, string, string list, enum, color, rect,
+              dictionary) and Dictionary; serialize / deserialize / parse_inferred
+  schema.h    KeySchema, Schema (builder), SchemaRegistry
+  storage.h   KeyFile (INI parser/writer, atomic save), LayeredStorage (user over system)
+  watcher.h   WatcherRegistry, INotifier (the cross-process channel)
+  store.h     Store, StoreOptions
+  broconf.h   umbrella header
+```
+
+Watcher callbacks for other processes' changes run on the notifier's thread;
+callbacks for the store's own writes run on the writing thread.
+
+## Platforms
+
+| | Linux | Windows | macOS |
+|---|---|---|---|
+| User file | `$XDG_CONFIG_HOME/bro/settings.ini` (`~/.config/bro/...`) | `%APPDATA%\bro\settings.ini` | `~/Library/Preferences/bro/settings.ini` |
+| System files | each `$XDG_CONFIG_DIRS/bro/settings.ini` (else `/etc/xdg/bro/...`), then `/usr/share/bro/settings.ini` | `%PROGRAMDATA%\bro\settings.ini` | `/Library/Preferences/bro/settings.ini` |
+| Other processes' changes | `org.bro.Config.Changed(s path, s key)` on the session bus (sd-bus), and inotify on the user file's directory | directory watch (`FindFirstChangeNotificationW`) | kqueue `EVFILT_VNODE` on the directory |
+
+The file watch alone is enough for processes that share the user file; the
+D-Bus signal (Linux) also tells processes that keep their settings elsewhere
+which key changed. A missing session bus disables the signal and leaves the
+file watch. Every path can be overridden in `StoreOptions`, and either channel
+turned off (`enable_dbus`, `enable_file_watcher`).
+
+## Building
 
 ```bash
-# Configure
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
-
-# Compile (bounded concurrency to respect system memory limits)
-cmake --build build -j 2
-
-# Run tests
-ctest --test-dir build --output-on-failure
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release        # Windows: cmake -B build
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 ```
+
+Requirements: CMake 3.24+, a C++20 compiler (MSVC 2022, GCC 12+, Clang 15+,
+Apple Clang), and on Linux `libsystemd` (sd-bus, >= 246) with pkg-config.
+The Linux D-Bus test also uses `dbus-daemon` and `gdbus` when present. There
+are no sibling repos to fetch.
+
+Add it to another CMake project with `add_subdirectory(broconf)` and link
+`broconf::broconf`.
+
+## Tests
+
+Real ctests: no `assert()`, failures count in every configuration, exit 77 is
+a skip with the reason printed. Everything runs in a temporary directory and
+leaves nothing behind.
+
+| Test | What it checks against |
+|---|---|
+| test_types, test_schema | value codecs (exact double round trip, escapes, nan/inf), schema validation |
+| test_keyfile | the INI format and atomic saves, read back from disk |
+| test_storage_layered | user-over-system layering, reset, external rewrites seen by reload, concurrent readers and writers |
+| test_store_api | the Store end to end, persistence across instances |
+| test_file_watcher | a second process (the test binary run again) sets and resets a key in the shared file; the watcher must report both (inotify / directory watch / kqueue) |
+| test_dbus_sync (Linux) | on a private `dbus-daemon`: a second process's write, a `gdbus emit` from an independent client, and no echo of the store's own signal |
+
+## License
+
+MIT, see [LICENSE](LICENSE).
