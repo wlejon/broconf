@@ -40,8 +40,6 @@ jobs:
         with:
           path: broconf
 
-      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
-
       - name: Install packages (Linux)
         if: runner.os == 'Linux'
         run: |

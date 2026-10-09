@@ -106,49 +106,20 @@ ctest --test-dir build -C Release --output-on-failure
 CMake options:
 - `BROCONF_BUILD_TESTS`: Build tests (default `ON` when top-level, `OFF` when included via `add_subdirectory`).
 - `BROCONF_COVERAGE`: Instrument the build for gcov coverage (GCC/Clang).
-- `BROCONF_ENABLE_API`: Build the standalone Bronze JavaScript API (default `ON`; searches `../bronze` or `-DBRONZE_DIR=<path>`).
+- `BROCONF_ENABLE_API`: Build the standalone Bronze JavaScript API (default `ON` when top-level). bronze (with brass) comes from `../bronze` beside the top-level project, else the pinned commit, fetched at configure (`cmake/bro_deps.cmake`), so a plain `git clone` builds.
 
 ### Consuming broconf
 
-Downstream projects consume the `broconf::broconf` CMake target. Following the
-ecosystem dependency convention, consumers resolve `broconf` either as a sibling
-checkout or as a vendored submodule:
-
-#### Sibling layout
-
-When `broconf` is checked out beside your project at `../broconf`:
+Downstream projects consume the `broconf::broconf` CMake target. Ecosystem
+consumers pin it with `bro_dependency()` (`cmake/bro_deps.cmake`): a target the
+outer project already added wins, else a `../broconf` working tree beside the
+top-level project, else the pinned commit, fetched at configure
+(`-DFETCHCONTENT_SOURCE_DIR_BROCONF=<path>` points at another tree):
 
 ```cmake
-if(NOT TARGET broconf::broconf)
-    if(DEFINED BROCONF_DIR AND EXISTS "${BROCONF_DIR}/CMakeLists.txt")
-        # Explicit override supplied via -DBROCONF_DIR=<path>
-    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../broconf/CMakeLists.txt")
-        set(BROCONF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../broconf" CACHE PATH "broconf source tree")
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/../broconf/CMakeLists.txt")
-        set(BROCONF_DIR "${CMAKE_SOURCE_DIR}/../broconf" CACHE PATH "broconf source tree")
-    endif()
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
+bro_dependency(broconf GITHUB wlejon/broconf REF <40-hex sha>)
 
-    if(NOT BROCONF_DIR OR NOT EXISTS "${BROCONF_DIR}/CMakeLists.txt")
-        message(FATAL_ERROR "broconf not found beside this repository or at BROCONF_DIR")
-    endif()
-
-    add_subdirectory("${BROCONF_DIR}" "${CMAKE_BINARY_DIR}/broconf-build" EXCLUDE_FROM_ALL)
-endif()
-```
-
-#### Submodule layout
-
-When `broconf` is vendored as a git submodule under `third_party/broconf`:
-
-```cmake
-if(NOT TARGET broconf::broconf)
-    add_subdirectory(third_party/broconf EXCLUDE_FROM_ALL)
-endif()
-```
-
-#### Linking
-
-```cmake
 target_link_libraries(your_target PRIVATE broconf::broconf)
 ```
 
