@@ -106,19 +106,19 @@ ctest --test-dir build -C Release --output-on-failure
 CMake options:
 - `BROCONF_BUILD_TESTS`: Build tests (default `ON` when top-level, `OFF` when included via `add_subdirectory`).
 - `BROCONF_COVERAGE`: Instrument the build for gcov coverage (GCC/Clang).
-- `BROCONF_ENABLE_API`: Build the standalone Bronze JavaScript API (default `ON` when top-level). bronze (with brass) comes from `../bronze` beside the top-level project, else the pinned commit, fetched at configure (`cmake/bro_deps.cmake`), so a plain `git clone` builds.
+- `BROCONF_ENABLE_API`: Build the standalone Bronze JavaScript API (default `ON` when top-level). bronze (with brass) comes from `../bronze` beside the top-level project, else the head of its main branch, fetched at configure (`cmake/bro_deps.cmake`), so a plain `git clone` builds.
 
 ### Consuming broconf
 
 Downstream projects consume the `broconf::broconf` CMake target. Ecosystem
-consumers pin it with `bro_dependency()` (`cmake/bro_deps.cmake`): a target the
+consumers declare it with `bro_dependency()` (`cmake/bro_deps.cmake`): a target the
 outer project already added wins, else a `../broconf` working tree beside the
-top-level project, else the pinned commit, fetched at configure
+top-level project, else the head of its main branch, fetched at configure
 (`-DFETCHCONTENT_SOURCE_DIR_BROCONF=<path>` points at another tree):
 
 ```cmake
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
-bro_dependency(broconf GITHUB wlejon/broconf REF <40-hex sha>)
+bro_dependency(broconf)
 
 target_link_libraries(your_target PRIVATE broconf::broconf)
 ```
