@@ -125,6 +125,7 @@ void test_concurrent_read_write() {
     auto final_val = storage.get("sec", "key", Type::Int64);
     REQUIRE(final_val.has_value());
     CHECK_EQ(final_val->get_int(), static_cast<int64_t>(49));
+    CHECK(storage.flush());
     LayeredStorage reread(user_path);
     auto on_disk = reread.get("sec", "key", Type::Int64);
     REQUIRE(on_disk.has_value());

@@ -16,7 +16,7 @@ void installConf();
 /// Pumps async change events and watcher callbacks on the JS thread.
 void tickConfAsync();
 
-/// Cleans up active watchers.
+/// Cleans up active watchers and flushes pending writes to the settings file.
 void shutdownConfAsync();
 
 /// Sets the store used by the API (defaults to Store::default_store()).

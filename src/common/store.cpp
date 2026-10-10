@@ -102,15 +102,31 @@ Store::Store(StoreOptions options) : options_(std::move(options)) {
     }
 
     storage_ = std::make_unique<LayeredStorage>(options_.user_config_path,
-                                                options_.system_config_paths);
+                                                options_.system_config_paths,
+                                                options_.persist_delay);
 
     init_notifier();
+
+    // Other processes hear of a change once it is in the file (a D-Bus
+    // signal sent at set() time would have them reload a file without it).
+    storage_->set_persisted_handler([this](const std::vector<std::pair<std::string, std::string>>& written) {
+        if (!notifier_) return;
+        for (const auto& [section, key] : written) {
+            notifier_->notify_changed(section, key);
+        }
+    });
 }
 
 Store::~Store() {
+    // Write what is pending while the notifier can still announce it.
+    storage_->close();
     if (notifier_) {
         notifier_->stop();
     }
+}
+
+bool Store::flush() {
+    return storage_->flush();
 }
 
 void Store::init_notifier() {
@@ -206,13 +222,8 @@ bool Store::set(const std::string& path, const std::string& key, const Value& va
         return false;
     }
 
-    // Notify local watchers
+    // Notify local watchers. Other processes hear of it once it is written.
     watcher_registry_.notify(path, key, value);
-
-    // Notify external processes
-    if (notifier_) {
-        notifier_->notify_changed(path, key);
-    }
 
     return true;
 }
@@ -227,13 +238,8 @@ bool Store::reset(const std::string& path, const std::string& key) {
     auto new_val = get_optional(path, key);
     Value effective_val = new_val.value_or(Value());
 
-    // Notify local watchers
+    // Notify local watchers. Other processes hear of it once it is written.
     watcher_registry_.notify(path, key, effective_val);
-
-    // Notify external processes
-    if (notifier_) {
-        notifier_->notify_changed(path, key);
-    }
 
     return true;
 }

@@ -472,6 +472,13 @@ void installConfOnto(Value confObj) {
         return promise.get();
     });
 
+    // set()/reset() change memory and return; the file is written shortly
+    // after, coalesced, on the store's writer thread. flush() writes what is
+    // pending now and returns whether that write succeeded.
+    conf.def("flush", 0, [](Value, std::span<const Value>) -> Value {
+        return ev::fromBool(activeStore()->flush());
+    });
+
     conf.def("reset", 1, [](Value, std::span<const Value> args) -> Value {
         auto store = activeStore();
         PathKey pk = parsePathKey(args);

@@ -94,6 +94,8 @@ void test_store_comprehensive() {
     REQUIRE(!notified_theme); // Was unwatched
 
     // 8. Persistence check: Re-instantiate Store pointing to same file
+    // (set() returns before its write; flush() makes the file current)
+    REQUIRE(store->flush());
     {
         auto store2 = Store::create(opts);
         store2->register_schema(iface);

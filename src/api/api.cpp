@@ -83,6 +83,8 @@ void tickConfAsync() {
 
 void shutdownConfAsync() {
     clearWatchers();
+    // Teardown writes what this realm set and the writer has not yet.
+    activeStore()->flush();
 }
 
 } // namespace broconf::api

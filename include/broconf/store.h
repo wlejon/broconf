@@ -6,6 +6,7 @@
 #include "broconf/value.h"
 #include "broconf/watcher.h"
 
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -21,6 +22,10 @@ struct StoreOptions {
     bool enable_file_watcher{true};
     std::shared_ptr<SchemaRegistry> schema_registry;
     std::shared_ptr<INotifier> custom_notifier;
+    // set()/reset() change memory at once; the file is written this long
+    // after the first unwritten change, one write for the whole burst, off
+    // the calling thread. flush() and the Store's destruction write at once.
+    std::chrono::milliseconds persist_delay{50};
 };
 
 class Store : public std::enable_shared_from_this<Store> {
@@ -65,6 +70,13 @@ public:
 
     // Explicit reload / sync
     void reload();
+
+    // Writes every change made before the call to the user file and returns
+    // once it is there (false: the write failed; the changes stay pending).
+    // set()/reset() return before their write; call this where the file must
+    // be current, e.g. before another process or Store reads it. The
+    // destructor flushes too.
+    bool flush();
 
     [[nodiscard]] const StoreOptions& options() const noexcept { return options_; }
 

@@ -22,6 +22,8 @@ broconf_test(test_schema SOURCES test_schema.cpp)
 broconf_test(test_keyfile SOURCES test_keyfile.cpp)
 broconf_test(test_storage_layered SOURCES test_storage_layered.cpp)
 broconf_test(test_store_api SOURCES test_store_api.cpp)
+# Deferred, coalesced, atomic writes; reload keeps unwritten changes.
+broconf_test(test_persist SOURCES test_persist.cpp)
 # A second process writes the settings file; this one's watcher must see it.
 broconf_test(test_file_watcher SOURCES test_file_watcher.cpp)
 
