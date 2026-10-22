@@ -24,7 +24,7 @@ struct ActiveWatcher {
     broconf::WatcherToken nativeToken{0};
     std::string path;
     std::string key;
-    std::unique_ptr<ev::Persistent> callback;
+    std::shared_ptr<ev::Persistent> callback;
     std::unordered_map<std::string, broconf::Value> previousValues;
 };
 
@@ -89,7 +89,7 @@ Value confValueToJs(const broconf::Value& val) {
         ev::Persistent arr(ev::makeArray());
         for (uint32_t i = 0; i < list.size(); ++i) {
             ev::Persistent s(ev::fromUtf8(list[i]));
-            ev::setElement(arr.get(), i, s.get());
+            arr.set(ev::setElement(arr.get(), i, s.get()));
         }
         return arr.get();
     }
@@ -126,147 +126,142 @@ Value confValueToJs(const broconf::Value& val) {
     return ev::undefined();
 }
 
-broconf::Value jsToConfValue(Value v, std::optional<Type> expected_type = std::nullopt) {
+broconf::Value jsToConfValue(Value vIn, std::optional<Type> expected_type = std::nullopt) {
+    ev::Persistent vRoot(vIn);
     if (expected_type.has_value()) {
         switch (*expected_type) {
             case Type::Bool: {
-                if (ev::isBool(v)) return broconf::Value(ev::toBool(v));
-                if (ev::isNumber(v)) return broconf::Value(ev::toDouble(v) != 0.0);
+                if (ev::isBool(vRoot.get())) return broconf::Value(ev::toBool(vRoot.get()));
+                if (ev::isNumber(vRoot.get())) return broconf::Value(ev::toDouble(vRoot.get()) != 0.0);
                 throw ValidationError("Expected boolean value");
             }
             case Type::Int64: {
-                if (!ev::isNumber(v)) throw ValidationError("Expected integer number");
-                double d = ev::toDouble(v);
+                if (!ev::isNumber(vRoot.get())) throw ValidationError("Expected integer number");
+                double d = ev::toDouble(vRoot.get());
                 return broconf::Value(static_cast<int64_t>(d));
             }
             case Type::Double: {
-                if (!ev::isNumber(v)) throw ValidationError("Expected number");
-                return broconf::Value(ev::toDouble(v));
+                if (!ev::isNumber(vRoot.get())) throw ValidationError("Expected number");
+                return broconf::Value(ev::toDouble(vRoot.get()));
             }
             case Type::String: {
-                if (!ev::isString(v)) throw ValidationError("Expected string");
-                return broconf::Value(ev::toUtf8(v));
+                if (!ev::isString(vRoot.get())) throw ValidationError("Expected string");
+                return broconf::Value(ev::toUtf8(vRoot.get()));
             }
             case Type::StringList: {
-                if (!isArrayValue(v)) throw ValidationError("Expected string array");
+                if (!isArrayValue(vRoot.get())) throw ValidationError("Expected string array");
                 std::vector<std::string> list;
-                ev::Persistent arr(v);
-                Value lenVal = ev::getProperty(arr.get(), "length");
+                Value lenVal = ev::getProperty(vRoot.get(), "length");
                 uint32_t len = ev::isNumber(lenVal) ? static_cast<uint32_t>(ev::toDouble(lenVal)) : 0;
                 for (uint32_t i = 0; i < len; ++i) {
-                    list.push_back(ev::toUtf8(ev::getElement(arr.get(), i)));
+                    list.push_back(ev::toUtf8(ev::getElement(vRoot.get(), i)));
                 }
                 return broconf::Value(std::move(list));
             }
             case Type::Enum: {
-                if (ev::isString(v)) {
-                    return broconf::Value::make_enum(ev::toUtf8(v));
+                if (ev::isString(vRoot.get())) {
+                    return broconf::Value::make_enum(ev::toUtf8(vRoot.get()));
                 }
-                if (ev::isObject(v)) {
-                    Value nameVal = ev::getProperty(v, "name");
-                    if (ev::isString(nameVal)) {
-                        Value valVal = ev::getProperty(v, "value");
+                if (ev::isObject(vRoot.get())) {
+                    ev::Persistent nameVal(ev::getProperty(vRoot.get(), "name"));
+                    if (ev::isString(nameVal.get())) {
+                        Value valVal = ev::getProperty(vRoot.get(), "value");
                         int64_t numVal = ev::isNumber(valVal) ? static_cast<int64_t>(ev::toDouble(valVal)) : 0;
-                        return broconf::Value::make_enum(ev::toUtf8(nameVal), numVal);
+                        return broconf::Value::make_enum(ev::toUtf8(nameVal.get()), numVal);
                     }
                 }
                 throw ValidationError("Expected enum string or object with name");
             }
             case Type::Color: {
-                if (ev::isString(v)) {
-                    auto c = Color::from_hex_string(ev::toUtf8(v));
+                if (ev::isString(vRoot.get())) {
+                    auto c = Color::from_hex_string(ev::toUtf8(vRoot.get()));
                     if (c) return broconf::Value(*c);
                     throw ValidationError("Invalid color hex string");
                 }
-                if (ev::isObject(v)) {
-                    ev::Persistent obj(v);
-                    uint8_t r = static_cast<uint8_t>(ev::toDouble(ev::getProperty(obj.get(), "r")));
-                    uint8_t g = static_cast<uint8_t>(ev::toDouble(ev::getProperty(obj.get(), "g")));
-                    uint8_t b = static_cast<uint8_t>(ev::toDouble(ev::getProperty(obj.get(), "b")));
-                    Value aVal = ev::getProperty(obj.get(), "a");
+                if (ev::isObject(vRoot.get())) {
+                    uint8_t r = static_cast<uint8_t>(ev::toDouble(ev::getProperty(vRoot.get(), "r")));
+                    uint8_t g = static_cast<uint8_t>(ev::toDouble(ev::getProperty(vRoot.get(), "g")));
+                    uint8_t b = static_cast<uint8_t>(ev::toDouble(ev::getProperty(vRoot.get(), "b")));
+                    Value aVal = ev::getProperty(vRoot.get(), "a");
                     uint8_t a = ev::isUndefined(aVal) ? 255 : static_cast<uint8_t>(ev::toDouble(aVal));
                     return broconf::Value(Color(r, g, b, a));
                 }
                 throw ValidationError("Expected color object or hex string");
             }
             case Type::Rect: {
-                if (ev::isObject(v)) {
-                    ev::Persistent obj(v);
-                    int32_t x = static_cast<int32_t>(ev::toDouble(ev::getProperty(obj.get(), "x")));
-                    int32_t y = static_cast<int32_t>(ev::toDouble(ev::getProperty(obj.get(), "y")));
-                    int32_t w = static_cast<int32_t>(ev::toDouble(ev::getProperty(obj.get(), "width")));
-                    int32_t h = static_cast<int32_t>(ev::toDouble(ev::getProperty(obj.get(), "height")));
+                if (ev::isObject(vRoot.get())) {
+                    int32_t x = static_cast<int32_t>(ev::toDouble(ev::getProperty(vRoot.get(), "x")));
+                    int32_t y = static_cast<int32_t>(ev::toDouble(ev::getProperty(vRoot.get(), "y")));
+                    int32_t w = static_cast<int32_t>(ev::toDouble(ev::getProperty(vRoot.get(), "width")));
+                    int32_t h = static_cast<int32_t>(ev::toDouble(ev::getProperty(vRoot.get(), "height")));
                     return broconf::Value(Rect(x, y, w, h));
                 }
                 throw ValidationError("Expected rect object with x, y, width, height");
             }
             case Type::Dictionary: {
-                if (!ev::isObject(v)) throw ValidationError("Expected dictionary object");
+                if (!ev::isObject(vRoot.get())) throw ValidationError("Expected dictionary object");
                 std::map<std::string, broconf::Value> map;
-                auto keys = getObjectKeys(v);
-                ev::Persistent obj(v);
+                auto keys = getObjectKeys(vRoot.get());
                 for (const auto& k : keys) {
-                    Value item = ev::getProperty(obj.get(), k);
-                    map[k] = jsToConfValue(item, std::nullopt);
+                    ev::Persistent item(ev::getProperty(vRoot.get(), k));
+                    map[k] = jsToConfValue(item.get(), std::nullopt);
                 }
                 return broconf::Value(Dictionary(std::move(map)));
             }
         }
     }
 
-    if (ev::isBool(v)) {
-        return broconf::Value(ev::toBool(v));
+    if (ev::isBool(vRoot.get())) {
+        return broconf::Value(ev::toBool(vRoot.get()));
     }
-    if (ev::isNumber(v)) {
-        double d = ev::toDouble(v);
+    if (ev::isNumber(vRoot.get())) {
+        double d = ev::toDouble(vRoot.get());
         if (std::floor(d) == d && d >= -9223372036854775808.0 && d <= 9223372036854775807.0) {
             return broconf::Value(static_cast<int64_t>(d));
         }
         return broconf::Value(d);
     }
-    if (ev::isString(v)) {
-        return broconf::Value(ev::toUtf8(v));
+    if (ev::isString(vRoot.get())) {
+        return broconf::Value(ev::toUtf8(vRoot.get()));
     }
-    if (isArrayValue(v)) {
+    if (isArrayValue(vRoot.get())) {
         std::vector<std::string> list;
-        ev::Persistent arr(v);
-        Value lenVal = ev::getProperty(arr.get(), "length");
+        Value lenVal = ev::getProperty(vRoot.get(), "length");
         uint32_t len = ev::isNumber(lenVal) ? static_cast<uint32_t>(ev::toDouble(lenVal)) : 0;
         for (uint32_t i = 0; i < len; ++i) {
-            list.push_back(ev::toUtf8(ev::getElement(arr.get(), i)));
+            list.push_back(ev::toUtf8(ev::getElement(vRoot.get(), i)));
         }
         return broconf::Value(std::move(list));
     }
-    if (ev::isObject(v)) {
-        ev::Persistent obj(v);
-        Value rVal = ev::getProperty(obj.get(), "r");
-        Value gVal = ev::getProperty(obj.get(), "g");
-        Value bVal = ev::getProperty(obj.get(), "b");
-        if (ev::isNumber(rVal) && ev::isNumber(gVal) && ev::isNumber(bVal)) {
-            uint8_t r = static_cast<uint8_t>(ev::toDouble(rVal));
-            uint8_t g = static_cast<uint8_t>(ev::toDouble(gVal));
-            uint8_t b = static_cast<uint8_t>(ev::toDouble(bVal));
-            Value aVal = ev::getProperty(obj.get(), "a");
+    if (ev::isObject(vRoot.get())) {
+        ev::Persistent rVal(ev::getProperty(vRoot.get(), "r"));
+        ev::Persistent gVal(ev::getProperty(vRoot.get(), "g"));
+        ev::Persistent bVal(ev::getProperty(vRoot.get(), "b"));
+        if (ev::isNumber(rVal.get()) && ev::isNumber(gVal.get()) && ev::isNumber(bVal.get())) {
+            uint8_t r = static_cast<uint8_t>(ev::toDouble(rVal.get()));
+            uint8_t g = static_cast<uint8_t>(ev::toDouble(gVal.get()));
+            uint8_t b = static_cast<uint8_t>(ev::toDouble(bVal.get()));
+            Value aVal = ev::getProperty(vRoot.get(), "a");
             uint8_t a = ev::isUndefined(aVal) ? 255 : static_cast<uint8_t>(ev::toDouble(aVal));
             return broconf::Value(Color(r, g, b, a));
         }
-        Value xVal = ev::getProperty(obj.get(), "x");
-        Value yVal = ev::getProperty(obj.get(), "y");
-        Value wVal = ev::getProperty(obj.get(), "width");
-        Value hVal = ev::getProperty(obj.get(), "height");
-        if (ev::isNumber(xVal) && ev::isNumber(yVal) && ev::isNumber(wVal) && ev::isNumber(hVal)) {
+        ev::Persistent xVal(ev::getProperty(vRoot.get(), "x"));
+        ev::Persistent yVal(ev::getProperty(vRoot.get(), "y"));
+        ev::Persistent wVal(ev::getProperty(vRoot.get(), "width"));
+        ev::Persistent hVal(ev::getProperty(vRoot.get(), "height"));
+        if (ev::isNumber(xVal.get()) && ev::isNumber(yVal.get()) && ev::isNumber(wVal.get()) && ev::isNumber(hVal.get())) {
             return broconf::Value(Rect(
-                static_cast<int32_t>(ev::toDouble(xVal)),
-                static_cast<int32_t>(ev::toDouble(yVal)),
-                static_cast<int32_t>(ev::toDouble(wVal)),
-                static_cast<int32_t>(ev::toDouble(hVal))
+                static_cast<int32_t>(ev::toDouble(xVal.get())),
+                static_cast<int32_t>(ev::toDouble(yVal.get())),
+                static_cast<int32_t>(ev::toDouble(wVal.get())),
+                static_cast<int32_t>(ev::toDouble(hVal.get()))
             ));
         }
         std::map<std::string, broconf::Value> map;
-        auto keys = getObjectKeys(obj.get());
+        auto keys = getObjectKeys(vRoot.get());
         for (const auto& k : keys) {
-            Value item = ev::getProperty(obj.get(), k);
-            map[k] = jsToConfValue(item, std::nullopt);
+            ev::Persistent item(ev::getProperty(vRoot.get(), k));
+            map[k] = jsToConfValue(item.get(), std::nullopt);
         }
         return broconf::Value(Dictionary(std::move(map)));
     }
@@ -298,14 +293,15 @@ PathKey parsePathKey(std::span<const Value> args) {
     return pk;
 }
 
-bool parseSetArgs(std::span<const Value> args, std::string& path, std::string& key, Value& val) {
+bool parseSetArgs(std::span<const Value> args, std::string& path, std::string& key, ev::Persistent& val) {
     if (args.size() >= 3) {
+        val.set(args[2]);
         path = ev::toUtf8(args[0]);
         key = ev::toUtf8(args[1]);
-        val = args[2];
         return true;
     }
     if (args.size() == 2) {
+        val.set(args[1]);
         std::string s = ev::toUtf8(args[0]);
         auto dot = s.rfind('.');
         if (dot != std::string::npos) {
@@ -315,7 +311,6 @@ bool parseSetArgs(std::span<const Value> args, std::string& path, std::string& k
             path = "";
             key = s;
         }
-        val = args[1];
         return true;
     }
     return false;
@@ -347,25 +342,24 @@ void drainWatcherEvents() {
         ready.swap(g_change_queue);
     }
     for (const auto& chg : ready) {
-        ActiveWatcher* w = nullptr;
+        std::shared_ptr<ev::Persistent> cb;
+        broconf::Value oldVal;
+        bool hasOld = false;
         {
             std::lock_guard lock(g_watcher_mu);
             auto it = g_watchers.find(chg.apiToken);
-            if (it != g_watchers.end()) {
-                w = &it->second;
+            if (it != g_watchers.end() && it->second.callback) {
+                cb = it->second.callback;
+                std::string fullKey = chg.path + "/" + chg.key;
+                auto prevIt = it->second.previousValues.find(fullKey);
+                if (prevIt != it->second.previousValues.end()) {
+                    hasOld = true;
+                    oldVal = prevIt->second;
+                }
+                it->second.previousValues[fullKey] = chg.newValue;
             }
         }
-        if (!w || !w->callback) continue;
-
-        std::string fullKey = chg.path + "/" + chg.key;
-        broconf::Value oldVal;
-        bool hasOld = false;
-        auto prevIt = w->previousValues.find(fullKey);
-        if (prevIt != w->previousValues.end()) {
-            hasOld = true;
-            oldVal = prevIt->second;
-        }
-        w->previousValues[fullKey] = chg.newValue;
+        if (!cb) continue;
 
         ev::Persistent keyVal(ev::fromUtf8(chg.key));
         ev::Persistent newValVal(confValueToJs(chg.newValue));
@@ -378,7 +372,7 @@ void drainWatcherEvents() {
             oldValVal.get(),
             pathVal.get()
         };
-        ev::call(w->callback->get(), ev::undefined(), std::span<const Value>(args, 4));
+        ev::call(cb->get(), ev::undefined(), std::span<const Value>(args, 4));
     }
 }
 
@@ -424,7 +418,7 @@ void installConfOnto(Value confObj) {
         ev::Persistent promise(ev::createPromise());
         std::string path;
         std::string key;
-        Value valArg = ev::undefined();
+        ev::Persistent valArg;
 
         if (!parseSetArgs(args, path, key, valArg)) {
             ev::Persistent err(makeError("bro.conf.set requires (key, value) or (path, key, value)"));
@@ -442,7 +436,7 @@ void installConfOnto(Value confObj) {
 
         broconf::Value confVal;
         try {
-            confVal = jsToConfValue(valArg, expectedType);
+            confVal = jsToConfValue(valArg.get(), expectedType);
         } catch (const ValidationError& e) {
             ev::Persistent err(makeError(std::string("ValidationError: ") + e.what()));
             ev::rejectPromise(promise.get(), err.get());
@@ -507,7 +501,7 @@ void installConfOnto(Value confObj) {
         ev::Persistent arr(ev::makeArray());
         for (uint32_t i = 0; i < keys.size(); ++i) {
             ev::Persistent k(ev::fromUtf8(keys[i]));
-            ev::setElement(arr.get(), i, k.get());
+            arr.set(ev::setElement(arr.get(), i, k.get()));
         }
         return arr.get();
     });
@@ -519,15 +513,15 @@ void installConfOnto(Value confObj) {
 
         std::string path;
         std::string key;
-        Value cbArg = ev::undefined();
+        ev::Persistent cbArg;
 
         if (args.size() >= 3 && ev::isFunction(args[2])) {
+            cbArg.set(args[2]);
             path = ev::toUtf8(args[0]);
             key = ev::toUtf8(args[1]);
-            cbArg = args[2];
         } else if (args.size() >= 2 && ev::isFunction(args[1])) {
+            cbArg.set(args[1]);
             std::string s = ev::toUtf8(args[0]);
-            cbArg = args[1];
             auto store = activeStore();
             auto dot = s.rfind('.');
             if (dot != std::string::npos) {
@@ -562,7 +556,7 @@ void installConfOnto(Value confObj) {
         watcher.apiToken = apiToken;
         watcher.path = path;
         watcher.key = key;
-        watcher.callback = std::make_unique<ev::Persistent>(cbArg);
+        watcher.callback = std::make_shared<ev::Persistent>(cbArg.get());
 
         if (!key.empty()) {
             auto cur = store->get_optional(path, key);

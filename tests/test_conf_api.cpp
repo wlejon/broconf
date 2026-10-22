@@ -244,6 +244,40 @@ int main() {
         // Event count should remain 1
         auto rAfterUnwatch = evalScript("globalThis._events.length;");
         CHECK(!rAfterUnwatch.thrown && ev::toDouble(rAfterUnwatch.value) == 1.0);
+
+        // Test re-entrant unwatch (one-shot watcher) and watch registration inside watcher callback
+        auto rReentrant = evalScript(
+            "(function() {\n"
+            "  globalThis._oneShotFired = 0;\n"
+            "  globalThis._childFired = 0;\n"
+            "  const oneShot = bro.conf.watch('test.app', (key, newVal) => {\n"
+            "    globalThis._oneShotFired++;\n"
+            "    oneShot.unwatch();\n"
+            "    for (let i = 0; i < 32; i++) {\n"
+            "      const h = bro.conf.watch('test.app', (k2, v2) => {\n"
+            "        if (i === 0) globalThis._childFired++;\n"
+            "      });\n"
+            "      if (i > 0) bro.conf.unwatch(h);\n"
+            "    }\n"
+            "  });\n"
+            "  return true;\n"
+            "})()\n"
+        );
+        CHECK(!rReentrant.thrown);
+
+        evalScript("bro.conf.set('test.app.name', 'TriggerOneShot');");
+        ev::drainMicrotasks();
+        broconf::api::tickConfAsync();
+
+        evalScript("bro.conf.set('test.app.name', 'TriggerChild');");
+        ev::drainMicrotasks();
+        broconf::api::tickConfAsync();
+
+        auto rReentrantCheck = evalScript(
+            "globalThis._oneShotFired === 1 && globalThis._childFired === 1;"
+        );
+        CHECK(!rReentrantCheck.thrown && ev::isBool(rReentrantCheck.value) && ev::toBool(rReentrantCheck.value));
+
         std::cout << "  watch, unwatch, tickConfAsync [PASS]" << std::endl;
     }
 
