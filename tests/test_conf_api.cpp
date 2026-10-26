@@ -1,5 +1,6 @@
 #include "../src/api/api.h"
 #include "embed/embed.h"
+#include "embed/embed_access.h"
 #include "eval/eval.h"
 #include "broconf/store.h"
 
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #define CHECK(cond)                                                        \
     do {                                                                   \
@@ -191,6 +193,37 @@ int main() {
         CHECK(!r.thrown);
         CHECK(ev::isBool(r.value) && ev::toBool(r.value));
         std::cout << "  reset [PASS]" << std::endl;
+    }
+
+    // 7b. The host's access gate (embed/embed_access.h): set and reset ask
+    // DesktopWrite first; refused, the promise rejects (set) or the call
+    // throws (reset) with code EACCES and nothing changes. Reads ask nothing.
+    std::cout << "Testing the access gate..." << std::endl;
+    {
+        std::vector<std::string> asked;
+        ev::setAccessGate([&](const ev::AccessRequest& req) -> std::string {
+            if (req.kind != ev::AccessKind::DesktopWrite) return "unexpected access";
+            asked.emplace_back(req.subject);
+            return "no files permission: " + std::string(req.subject);
+        });
+        evalScript(
+            "globalThis._gateSet = '';\n"
+            "bro.conf.set('test.app.count', 43).then(() => { globalThis._gateSet = 'ok'; },\n"
+            "  (e) => { globalThis._gateSet = e.code + '|' + e.message; });\n");
+        ev::drainMicrotasks();
+        auto r = evalScript("globalThis._gateSet");
+        CHECK(ev::isString(r.value) &&
+              ev::toUtf8(r.value) == "EACCES|no files permission: set test.app.count in the desktop settings");
+        r = evalScript(
+            "(function() { try { bro.conf.reset('test.app.count'); return 'no'; }\n"
+            "  catch (e) { return e.code + '|' + e.message; } })()");
+        CHECK(ev::isString(r.value) &&
+              ev::toUtf8(r.value) == "EACCES|no files permission: reset test.app.count in the desktop settings");
+        r = evalScript("bro.conf.get('test.app.count') === 10 && bro.conf.isDefault('test.app.count')");
+        CHECK(ev::isBool(r.value) && ev::toBool(r.value));
+        CHECK(asked.size() == 2);
+        ev::setAccessGate(nullptr);
+        std::cout << "  access gate [PASS]" << std::endl;
     }
 
     // 8. Test watch, unwatch and tickConfAsync

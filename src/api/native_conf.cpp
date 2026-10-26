@@ -2,6 +2,7 @@
 #include "object_builder.h"
 #include "broconf/store.h"
 #include "broconf/schema.h"
+#include "embed/embed_access.h"
 
 #include <cmath>
 #include <mutex>
@@ -273,6 +274,11 @@ struct PathKey {
     std::string key;
 };
 
+// "desktop.interface.theme": a key as the access gate is told of it.
+std::string displayKey(const std::string& path, const std::string& key) {
+    return path.empty() ? key : path + "." + key;
+}
+
 PathKey parsePathKey(std::span<const Value> args) {
     PathKey pk;
     if (args.empty()) return pk;
@@ -426,6 +432,16 @@ void installConfOnto(Value confObj) {
             return promise.get();
         }
 
+        // A change to the user's desktop settings: the host's access gate
+        // first (api.h, "Access"), before anything is parsed or stored.
+        if (std::string refused = ev::checkAccess(ev::AccessKind::DesktopWrite,
+                                                  "set " + displayKey(path, key) + " in the desktop settings");
+            !refused.empty()) {
+            ev::Persistent err(ev::newAccessError(refused, "EACCES"));
+            ev::rejectPromise(promise.get(), err.get());
+            return promise.get();
+        }
+
         auto store = activeStore();
         std::optional<Type> expectedType;
         auto schema = store->find_schema(path);
@@ -474,8 +490,13 @@ void installConfOnto(Value confObj) {
     });
 
     conf.def("reset", 1, [](Value, std::span<const Value> args) -> Value {
-        auto store = activeStore();
         PathKey pk = parsePathKey(args);
+        if (std::string refused = ev::checkAccess(ev::AccessKind::DesktopWrite,
+                                                  "reset " + displayKey(pk.path, pk.key) + " in the desktop settings");
+            !refused.empty()) {
+            return ev::throwAccessError(refused, "EACCES");
+        }
+        auto store = activeStore();
         bool ok = store->reset(pk.path, pk.key);
         return ev::fromBool(ok);
     });
