@@ -1,6 +1,5 @@
 add_library(broconf_api STATIC
     api.cpp
-    host_class.cpp
     native_conf.cpp
 )
 
