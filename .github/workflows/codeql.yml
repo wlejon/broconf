@@ -9,8 +9,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: codeql-${{ github.ref }}
-  cancel-in-progress: true
+  group: codeql-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 # What broconf parses is not only its own: settings files any process (or a
 # user with a text editor) can write, and D-Bus signals from anyone on the
